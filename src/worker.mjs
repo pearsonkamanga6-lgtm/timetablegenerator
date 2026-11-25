@@ -41,24 +41,36 @@ async function provisionSchool(req,env,url){
  const state={version:2,schoolName:name,days:["Monday","Tuesday","Wednesday","Thursday","Friday"],periodsPerDay:9,breakAfter:5,classes:[],teachers:[],subjects:[],allocations:[],unavailable:{},schedule:[],lastGeneration:null};
  const r=await env.DB.prepare("INSERT INTO school_accounts(slug,secret_hash,revision,state_json,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(slug) DO NOTHING").bind(slug,hash,JSON.stringify(state),now).run();
  if(r.meta.changes!==1)return json({error:"That school ID is already in use."},409);
- return json({schoolId:slug,username:slug,password,url:url.origin+"/s/"+slug+"/"},201);
+ return json({schoolId:slug,username:slug,password,url:url.origin+"/s/"+slug+"/",accessLink:url.origin+"/s/"+slug+"/#access="+password},201);
 }
 
 export default {async fetch(req,env){
  const installationAsset=await publicInstallAsset(req);if(installationAsset)return installationAsset;
  const url=new URL(req.url),route=url.pathname.match(/^\/s\/([a-z0-9][a-z0-9-]{2,47})(\/.*)?$/),slug=route?.[1]||null,path=route?(route[2]||"/"):url.pathname;
+ const shell=path==="/"&&(req.method==="GET"||req.method==="HEAD");
+ if(shell){if(slug&&!route[2])return Response.redirect(url.origin+"/s/"+slug+"/",302);const r=await env.ASSETS.fetch(new Request(new URL("/",url.origin),req));const h=new Headers(r.headers);h.set("Cache-Control","private, no-store");h.set("Referrer-Policy","no-referrer");return new Response(r.body,{status:r.status,headers:h});}
  let username="",password="";try{const h=req.headers.get("Authorization")||"";if(h.startsWith("Basic ")){const a=atob(h.slice(6)),i=a.indexOf(":");if(i>=0){username=a.slice(0,i);password=a.slice(i+1)}}}catch{}
  if(slug){
+  if(path==="/api/access"){
+   if(req.method!=="POST"||req.headers.get("Origin")!==url.origin||!req.headers.get("Content-Type")?.startsWith("application/json"))return json({error:"Invalid access request"},403);
+   let b;try{const raw=await req.text();if(raw.length>1024)return json({error:"Invalid access request"},400);b=JSON.parse(raw)}catch{return json({error:"Invalid access request"},400)}
+   const token=b?.token;if(typeof token!=="string"||!/^[0-9a-f]{48}$/.test(token))return json({error:"Invalid private link"},403);
+   try{const row=await env.DB.prepare("SELECT secret_hash FROM school_accounts WHERE slug=?").bind(slug).first();if(!row||!sameSecret(row.secret_hash,await secretHash(slug,token)))return json({error:"Invalid private link"},403);
+    return Response.json({ok:true},{headers:{"Cache-Control":"no-store","Set-Cookie":"school_access="+token+"; Path=/s/"+slug+"/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000"}});
+   }catch{return json({error:"School access unavailable"},503)}
+  }
+  const token=(req.headers.get("Cookie")||"").split(";").map(x=>x.trim()).find(x=>x.startsWith("school_access="))?.slice(14);
+  if(token&&/^[0-9a-f]{48}$/.test(token)){username=slug;password=token;}
   if(!env.DB)return json({error:"Database unavailable"},503);
-  if(username!==slug||password.length!==48||!(/^[0-9a-f]{48}$/.test(password)))return challenge(slug);
+  if(username!==slug||password.length!==48||!(/^[0-9a-f]{48}$/.test(password)))return json({error:"Open your private school access link first."},401);
   let account;try{account=await env.DB.prepare("SELECT secret_hash FROM school_accounts WHERE slug=?").bind(slug).first()}catch{return challenge(slug)}
-  if(!account||!sameSecret(account.secret_hash,await secretHash(slug,password)))return challenge(slug);
+  if(!account||!sameSecret(account.secret_hash,await secretHash(slug,password)))return json({error:"Open your private school access link first."},401);
  }else{
   if(!env.TIMETABLE_PASSWORD)return json({error:"Server password not configured"},503);
   if(username!=="school"||!sameSecret(password,env.TIMETABLE_PASSWORD))return challenge(null);
  }
  if(path==="/api/admin/schools"){if(slug)return json({error:"Forbidden"},403);if(!env.DB)return json({error:"Database unavailable"},503);try{return await provisionSchool(req,env,url)}catch(e){console.error("School provisioning failed");return json({error:"School provisioning failed"},500)}}
- if(path!=="/api/timetable"){if(path.startsWith("/api/")||slug&&path!=="/")return json({error:"Not found"},404);if(slug&&!route[2])return Response.redirect(url.origin+"/s/"+slug+"/",302);const assetReq=slug?new Request(new URL("/",url.origin),req):req;const r=await env.ASSETS.fetch(assetReq);const h=new Headers(r.headers);h.set("Cache-Control","private, no-store");return new Response(r.body,{status:r.status,headers:h});}
+ if(path!=="/api/timetable"){if(path.startsWith("/api/")||slug&&path!=="/")return json({error:"Not found"},404);if(slug&&!route[2])return Response.redirect(url.origin+"/s/"+slug+"/",302);const assetReq=slug||path==="/owner/"?new Request(new URL("/",url.origin),req):req;const r=await env.ASSETS.fetch(assetReq);const h=new Headers(r.headers);h.set("Cache-Control","private, no-store");return new Response(r.body,{status:r.status,headers:h});}
  if(!env.DB)return json({error:"Database binding DB not configured"},503);
  try{
  if(req.method==="GET"){const row=slug?await env.DB.prepare("SELECT revision,state_json,updated_at FROM school_accounts WHERE slug=?").bind(slug).first():await env.DB.prepare("SELECT revision,state_json,updated_at FROM timetable WHERE id=1").first();return json(row?{revision:row.revision,state:JSON.parse(row.state_json),updatedAt:row.updated_at}:{revision:0,state:null,updatedAt:null});}
