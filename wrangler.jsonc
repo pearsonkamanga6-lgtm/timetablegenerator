@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zambright-timetable",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-11-25",
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [{ "binding": "DB", "database_name": "zambright-timetable", "database_id": "REPLACE_WITH_REAL_D1_DATABASE_ID" }]
+}
