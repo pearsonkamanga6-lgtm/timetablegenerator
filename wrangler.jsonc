@@ -4,5 +4,5 @@
   "main": "src/worker.mjs",
   "compatibility_date": "2026-11-25",
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
-  "d1_databases": [{ "binding": "DB", "database_name": "zambright-timetable", "database_id": "REPLACE_WITH_REAL_D1_DATABASE_ID" }]
+  "d1_databases": [{ "binding": "DB", "database_name": "timetable", "database_id": "87e50281-b573-4d05-affb-14bfe5d335e4" }]
 }
