@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "zambright-timetable",
+  "name": "timetablegenerator",
   "main": "src/worker.mjs",
   "compatibility_date": "2026-11-25",
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
