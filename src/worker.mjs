@@ -1,5 +1,32 @@
 const json=(data,status=200)=>Response.json(data,{status,headers:{"Cache-Control":"no-store"}});
+
+const appManifest={
+ id:"/",name:"ZamBright Timetable Maker",short_name:"ZamBright",description:"Create school, class and teacher timetables.",
+ start_url:"/",scope:"/",display:"standalone",orientation:"any",background_color:"#F7F9FC",theme_color:"#082D73",lang:"en",
+ icons:[{src:"/app-icon-192.png",sizes:"192x192",type:"image/png",purpose:"any"},{src:"/app-icon-512.png",sizes:"512x512",type:"image/png",purpose:"any maskable"}],
+ categories:["education","productivity"]
+};
+const serviceWorkerCode='self.addEventListener("install",()=>self.skipWaiting());self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));self.addEventListener("fetch",e=>{if(e.request.mode!=="navigate"||new URL(e.request.url).origin!==self.location.origin)return;e.respondWith(fetch(e.request).catch(()=>new Response("<!doctype html><meta name=viewport content=width=device-width><title>ZamBright - offline</title><body style=font-family:Arial;padding:24px><h1>ZamBright Timetable Maker</h1><p>Connect to the internet, then reopen the app to access your protected timetable.</p><button onclick=location.reload()>Retry</button></body>",{status:503,headers:{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"}})));});';
+function pngChunk(name,data){const out=new Uint8Array(data.length+12),view=new DataView(out.buffer);view.setUint32(0,data.length);for(let i=0;i<4;i++)out[4+i]=name.charCodeAt(i);out.set(data,8);let crc=0xffffffff;for(let i=4;i<8+data.length;i++){crc^=out[i];for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}view.setUint32(8+data.length,(crc^0xffffffff)>>>0);return out}
+async function appIcon(size){
+ const stride=size*3+1,rows=new Uint8Array(stride*size);
+ const navy=[8,45,115],gold=[245,180,0],letters=[["11111","00001","00010","00100","01000","10000","11111"],["11110","10001","10001","11110","10001","10001","11110"]];
+ for(let y=0;y<size;y++)for(let x=0;x<size;x++){let px=x/size,py=y/size;const dx=Math.max(.23-px,0,px-.77),dy=Math.max(.23-py,0,py-.77);const inside=(dx*dx+dy*dy)<.065*.065;let color=inside?gold:navy;if(inside){const gx=Math.floor((px-.235)/.046),gy=Math.floor((py-.34)/.046);if(gy>=0&&gy<7&&gx>=0&&gx<11){const letter=gx<5?0:gx>5?1:-1,ix=letter===0?gx:gx-6;if(letter>=0&&letters[letter][gy][ix]==="1")color=navy;}}rows.set(color,y*stride+1+x*3)}
+ const ihdr=new Uint8Array(13),v=new DataView(ihdr.buffer);v.setUint32(0,size);v.setUint32(4,size);ihdr[8]=8;ihdr[9]=2;
+ const compressed=new Uint8Array(await new Response(new Blob([rows]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer());
+ return new Blob([new Uint8Array([137,80,78,71,13,10,26,10]),pngChunk("IHDR",ihdr),pngChunk("IDAT",compressed),pngChunk("IEND",new Uint8Array())],{type:"image/png"});
+}
+async function publicInstallAsset(req){
+ if(req.method!=="GET"&&req.method!=="HEAD")return null;
+ const path=new URL(req.url).pathname,head=req.method==="HEAD";
+ if(path==="/manifest.webmanifest")return new Response(head?null:JSON.stringify(appManifest),{headers:{"Content-Type":"application/manifest+json; charset=utf-8","Cache-Control":"public, max-age=300","X-Content-Type-Options":"nosniff"}});
+ if(path==="/sw.js")return new Response(head?null:serviceWorkerCode,{headers:{"Content-Type":"application/javascript; charset=utf-8","Cache-Control":"no-cache","Service-Worker-Allowed":"/","X-Content-Type-Options":"nosniff"}});
+ if(path==="/app-icon-192.png"||path==="/app-icon-512.png"){const size=path.includes("192")?192:512;return new Response(head?null:await appIcon(size),{headers:{"Content-Type":"image/png","Cache-Control":"public, max-age=86400","X-Content-Type-Options":"nosniff"}});}
+ return null;
+}
+
 export default {async fetch(req,env){
+ const installationAsset=await publicInstallAsset(req);if(installationAsset)return installationAsset;
  if(!env.TIMETABLE_PASSWORD)return json({error:"Server password not configured"},503);
  let auth=false;try{auth=atob((req.headers.get("Authorization")||"").replace(/^Basic /,""))==="school:"+env.TIMETABLE_PASSWORD}catch{}
  if(!auth)return new Response("Authentication required",{status:401,headers:{"WWW-Authenticate":'Basic realm="ZamBright Timetable"',"Cache-Control":"no-store"}});
