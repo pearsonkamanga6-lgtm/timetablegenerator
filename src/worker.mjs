@@ -44,6 +44,17 @@ async function provisionSchool(req,env,url){
  return json({schoolId:slug,username:slug,password,url:url.origin+"/s/"+slug+"/",accessLink:url.origin+"/s/"+slug+"/#access="+password},201);
 }
 
+
+async function ensureRecovery(db){await db.prepare("CREATE TABLE IF NOT EXISTS timetable_recovery (workspace TEXT NOT NULL, month TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL, saved_at TEXT NOT NULL, PRIMARY KEY(workspace,month))").run();}
+async function recoveryAPI(req,env,slug,url,path){
+ if(req.method!=="GET")return json({error:"Method not allowed"},405);
+ if(!env.DB)return json({error:"Database unavailable"},503);
+ await ensureRecovery(env.DB);const workspace=slug?"school:"+slug:"owner";
+ if(path==="/api/recovery"){const r=await env.DB.prepare("SELECT month,revision,saved_at FROM timetable_recovery WHERE workspace=? ORDER BY month DESC").bind(workspace).all();return json({backups:r.results||[]});}
+ const month=url.searchParams.get("month")||"";if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))return json({error:"Invalid backup month"},400);
+ const row=await env.DB.prepare("SELECT revision,state_json,saved_at FROM timetable_recovery WHERE workspace=? AND month=?").bind(workspace,month).first();return row?json({revision:row.revision,state:JSON.parse(row.state_json),savedAt:row.saved_at}):json({error:"Backup not found"},404);
+}
+
 export default {async fetch(req,env){
  const installationAsset=await publicInstallAsset(req);if(installationAsset)return installationAsset;
  const url=new URL(req.url),route=url.pathname.match(/^\/s\/([a-z0-9][a-z0-9-]{2,47})(\/.*)?$/),slug=route?.[1]||null,path=route?(route[2]||"/"):url.pathname;
@@ -70,6 +81,7 @@ export default {async fetch(req,env){
   if(username!=="school"||!sameSecret(password,env.TIMETABLE_PASSWORD))return challenge(null);
  }
  if(path==="/api/admin/schools"){if(slug)return json({error:"Forbidden"},403);if(!env.DB)return json({error:"Database unavailable"},503);try{return await provisionSchool(req,env,url)}catch(e){console.error("School provisioning failed");return json({error:"School provisioning failed"},500)}}
+ if(path==="/api/recovery"||path==="/api/recovery/download"){try{return await recoveryAPI(req,env,slug,url,path)}catch(e){console.error("Recovery access failed");return json({error:"Recovery service unavailable"},500)}}
  if(path!=="/api/timetable"){if(path.startsWith("/api/")||slug&&path!=="/")return json({error:"Not found"},404);if(slug&&!route[2])return Response.redirect(url.origin+"/s/"+slug+"/",302);const assetReq=slug||path==="/owner/"?new Request(new URL("/",url.origin),req):req;const r=await env.ASSETS.fetch(assetReq);const h=new Headers(r.headers);h.set("Cache-Control","private, no-store");return new Response(r.body,{status:r.status,headers:h});}
  if(!env.DB)return json({error:"Database binding DB not configured"},503);
  try{
@@ -82,7 +94,12 @@ export default {async fetch(req,env){
  const {revision,state:s}=body||{};
  if(!Number.isSafeInteger(revision)||revision<0||!s||s.version!==2||typeof s.schoolName!=="string"||!["classes","teachers","subjects","allocations","days","schedule"].every(k=>Array.isArray(s[k]))||!s.days.length||!Number.isInteger(s.periodsPerDay)||s.periodsPerDay<3||s.periodsPerDay>14||!Number.isInteger(s.breakAfter)||s.breakAfter<0||s.breakAfter>=s.periodsPerDay||!s.unavailable||typeof s.unavailable!=="object"||Array.isArray(s.unavailable))return json({error:"Invalid timetable or revision"},400);
  const next=revision+1,updatedAt=new Date().toISOString(),state=JSON.stringify(s);
- const r=slug?await env.DB.prepare("UPDATE school_accounts SET revision=?,state_json=?,updated_at=? WHERE slug=? AND revision=?").bind(next,state,updatedAt,slug,revision).run():revision===0?await env.DB.prepare("INSERT INTO timetable(id,revision,state_json,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO NOTHING").bind(next,state,updatedAt).run():await env.DB.prepare("UPDATE timetable SET revision=?,state_json=?,updated_at=? WHERE id=1 AND revision=?").bind(next,state,updatedAt,revision).run();
+ const update=slug?env.DB.prepare("UPDATE school_accounts SET revision=?,state_json=?,updated_at=? WHERE slug=? AND revision=?").bind(next,state,updatedAt,slug,revision):revision===0?env.DB.prepare("INSERT INTO timetable(id,revision,state_json,updated_at) VALUES(1,?,?,?) ON CONFLICT(id) DO NOTHING").bind(next,state,updatedAt):env.DB.prepare("UPDATE timetable SET revision=?,state_json=?,updated_at=? WHERE id=1 AND revision=?").bind(next,state,updatedAt,revision);
+ // Preserve the previous saved state on the first successful change in each UTC month.
+ // Both the snapshot and revision-checked update run in a single D1 transaction.
+ let r;if(revision>0){await ensureRecovery(env.DB);const month=updatedAt.slice(0,7),workspace=slug?"school:"+slug:"owner";
+ const recovery=slug?env.DB.prepare("INSERT OR IGNORE INTO timetable_recovery(workspace,month,revision,state_json,saved_at) SELECT ?,?,revision,state_json,updated_at FROM school_accounts WHERE slug=? AND revision=?").bind(workspace,month,slug,revision):env.DB.prepare("INSERT OR IGNORE INTO timetable_recovery(workspace,month,revision,state_json,saved_at) SELECT ?,?,revision,state_json,updated_at FROM timetable WHERE id=1 AND revision=?").bind(workspace,month,revision);
+ const results=await env.DB.batch([recovery,update]);r=results[1];}else r=await update.run();
  if(r.meta.changes!==1)return json({error:"Revision conflict: newer cloud data exists. Local data retained."},409);
  return json({revision:next,updatedAt});
  }catch(e){console.error(e);return json({error:"Database operation failed"},500);}
